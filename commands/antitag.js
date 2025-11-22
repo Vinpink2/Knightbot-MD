@@ -4,7 +4,7 @@ const isAdmin = require('../lib/isAdmin');
 async function handleAntitagCommand(sock, chatId, userMessage, senderId, isSenderAdmin, message) {
     try {
         if (!isSenderAdmin) {
-            await sock.sendMessage(chatId, { text: '```For Group Admins Only!```' },{quoted :message});
+            await sock.sendMessage(chatId, { text: '```For Group Admins Only!```' }, { quoted: message });
             return;
         }
 
@@ -14,67 +14,78 @@ async function handleAntitagCommand(sock, chatId, userMessage, senderId, isSende
 
         if (!action) {
             const usage = `\`\`\`ANTITAG SETUP\n\n${prefix}antitag on\n${prefix}antitag set delete | kick\n${prefix}antitag off\n\`\`\``;
-            await sock.sendMessage(chatId, { text: usage },{quoted :message});
+            await sock.sendMessage(chatId, { text: usage }, { quoted: message });
             return;
         }
 
         switch (action) {
             case 'on':
                 const existingConfig = await getAntitag(chatId, 'on');
-                if (existingConfig?.enabled) {
-                    await sock.sendMessage(chatId, { text: '*_Antitag is already on_*' },{quoted :message});
+                // FIX: Check if antitag is already enabled
+                if (existingConfig && existingConfig.enabled) {
+                    await sock.sendMessage(chatId, { text: '*_Antitag is already on_*' }, { quoted: message });
                     return;
                 }
+                // FIX: Set with proper structure
                 const result = await setAntitag(chatId, 'on', 'delete');
                 await sock.sendMessage(chatId, { 
                     text: result ? '*_Antitag has been turned ON_*' : '*_Failed to turn on Antitag_*' 
-                },{quoted :message});
+                }, { quoted: message });
                 break;
 
             case 'off':
                 await removeAntitag(chatId, 'on');
-                await sock.sendMessage(chatId, { text: '*_Antitag has been turned OFF_*' },{quoted :message});
+                await sock.sendMessage(chatId, { text: '*_Antitag has been turned OFF_*' }, { quoted: message });
                 break;
 
             case 'set':
                 if (args.length < 2) {
                     await sock.sendMessage(chatId, { 
                         text: `*_Please specify an action: ${prefix}antitag set delete | kick_*` 
-                    },{quoted :message});
+                    }, { quoted: message });
                     return;
                 }
                 const setAction = args[1];
                 if (!['delete', 'kick'].includes(setAction)) {
                     await sock.sendMessage(chatId, { 
                         text: '*_Invalid action. Choose delete or kick._*' 
-                    },{quoted :message});
+                    }, { quoted: message });
+                    return;
+                }
+                // FIX: Check if antitag is enabled before setting action
+                const currentConfig = await getAntitag(chatId, 'on');
+                if (!currentConfig || !currentConfig.enabled) {
+                    await sock.sendMessage(chatId, { 
+                        text: '*_Please enable antitag first using .antitag on_*' 
+                    }, { quoted: message });
                     return;
                 }
                 const setResult = await setAntitag(chatId, 'on', setAction);
                 await sock.sendMessage(chatId, { 
                     text: setResult ? `*_Antitag action set to ${setAction}_*` : '*_Failed to set Antitag action_*' 
-                },{quoted :message});
+                }, { quoted: message });
                 break;
 
             case 'get':
                 const status = await getAntitag(chatId, 'on');
-                const actionConfig = await getAntitag(chatId, 'on');
+                // FIX: Remove redundant database call
                 await sock.sendMessage(chatId, { 
-                    text: `*_Antitag Configuration:_*\nStatus: ${status ? 'ON' : 'OFF'}\nAction: ${actionConfig ? actionConfig.action : 'Not set'}` 
-                },{quoted :message});
+                    text: `*_Antitag Configuration:_*\nStatus: ${status && status.enabled ? 'ON' : 'OFF'}\nAction: ${status ? (status.action || 'delete') : 'Not set'}` 
+                }, { quoted: message });
                 break;
 
             default:
-                await sock.sendMessage(chatId, { text: `*_Use ${prefix}antitag for usage._*` },{quoted :message});
+                await sock.sendMessage(chatId, { text: `*_Use ${prefix}antitag for usage._*` }, { quoted: message });
         }
     } catch (error) {
         console.error('Error in antitag command:', error);
-        await sock.sendMessage(chatId, { text: '*_Error processing antitag command_*' },{quoted :message});
+        await sock.sendMessage(chatId, { text: '*_Error processing antitag command_*' }, { quoted: message });
     }
 }
 
 async function handleTagDetection(sock, chatId, message, senderId) {
     try {
+        // FIX: Get antitag setting once
         const antitagSetting = await getAntitag(chatId, 'on');
         if (!antitagSetting || !antitagSetting.enabled) return;
 
@@ -90,88 +101,103 @@ async function handleTagDetection(sock, chatId, message, senderId) {
             ''
         );
 
-        // Find all @mentions in text using improved regex
-        // Matches: @123456789, @⁨+91 70239 51514⁩, @~.., @217875470114951, etc.
+        // FIX: Improved mention detection
         const textMentions = messageText.match(/@[\d+\s\-()~.]+/g) || [];
-        
-        // Also match numeric-only mentions (like @217875470114951)
         const numericMentions = messageText.match(/@\d{10,}/g) || [];
         
-        // Combine all mentions and remove duplicates
-        const allMentions = [...new Set([...mentionedJids, ...textMentions, ...numericMentions])];
+        // Combine all detected mentions
+        const allDetectedMentions = [...mentionedJids, ...textMentions, ...numericMentions];
         
-        // Count unique numeric mentions (bot tagall patterns)
-        const uniqueNumericMentions = new Set();
-        numericMentions.forEach(mention => {
-            const numMatch = mention.match(/@(\d+)/);
-            if (numMatch) uniqueNumericMentions.add(numMatch[1]);
+        // Count unique mentions (avoid duplicates)
+        const uniqueMentions = new Set();
+        
+        // Add proper mentions from JIDs
+        mentionedJids.forEach(jid => {
+            if (jid && jid !== 'undefined@s.whatsapp.net') {
+                uniqueMentions.add(jid);
+            }
         });
         
-        // Count mentions from mentionedJid array (proper WhatsApp mentions)
-        const mentionedJidCount = mentionedJids.length;
-        
-        // Count unique numeric mentions found in text (bot tagall pattern)
-        const numericMentionCount = uniqueNumericMentions.size;
-        
-        // Use the higher count (either proper mentions or text-based mentions)
-        // This ensures we catch both standard mentions and bot tagall patterns
-        const totalMentions = Math.max(mentionedJidCount, numericMentionCount);
+        // Add text mentions
+        textMentions.forEach(mention => uniqueMentions.add(mention));
+        numericMentions.forEach(mention => uniqueMentions.add(mention));
 
-        // Check if it's a group message and has multiple mentions
-        if (totalMentions >= 3) {
-            // Get group participants to check if it's tagging most/all members
+        const totalUniqueMentions = uniqueMentions.size;
+
+        // FIX: Better threshold logic
+        if (totalUniqueMentions >= 3) {
+            // Get group metadata for threshold calculation
             const groupMetadata = await sock.groupMetadata(chatId);
             const participants = groupMetadata.participants || [];
+            const totalParticipants = participants.length;
             
-            // If mentions are more than 50% of group members, consider it as tagall
-            const mentionThreshold = Math.ceil(participants.length * 0.5);
+            // FIX: Dynamic threshold based on group size
+            let mentionThreshold;
+            if (totalParticipants <= 10) {
+                mentionThreshold = 3; // Small groups
+            } else if (totalParticipants <= 30) {
+                mentionThreshold = Math.ceil(totalParticipants * 0.4); // Medium groups
+            } else {
+                mentionThreshold = Math.ceil(totalParticipants * 0.3); // Large groups
+            }
             
-            // Also check if there are many numeric mentions in the text (bot tagall pattern)
-            // This catches bots that use numeric IDs instead of proper mentions
-            const hasManyNumericMentions = numericMentionCount >= 10 || 
-                                          (numericMentionCount >= 5 && numericMentionCount >= mentionThreshold);
-            
-            // Trigger if: standard mentions exceed threshold OR many numeric mentions detected
-            if (totalMentions >= mentionThreshold || hasManyNumericMentions) {
-                
+            // FIX: Check if mentions exceed threshold
+            const isMassMention = totalUniqueMentions >= mentionThreshold;
+            const hasManyNumericMentions = numericMentions.length >= 5;
+
+            if (isMassMention || hasManyNumericMentions) {
                 const action = antitagSetting.action || 'delete';
                 
                 if (action === 'delete') {
-                    // Delete the message
-                    await sock.sendMessage(chatId, {
-                        delete: {
-                            remoteJid: chatId,
-                            fromMe: false,
-                            id: message.key.id,
-                            participant: senderId
-                        }
-                    });
+                    // Try to delete the message
+                    try {
+                        await sock.sendMessage(chatId, {
+                            delete: {
+                                remoteJid: chatId,
+                                fromMe: false,
+                                id: message.key.id,
+                                participant: senderId
+                            }
+                        });
+                    } catch (deleteError) {
+                        console.error('Failed to delete message:', deleteError);
+                    }
                     
                     // Send warning
                     await sock.sendMessage(chatId, {
-                        text: `⚠️ *Tagall Detected!*.`
-                    }, { quoted: message });
+                        text: `⚠️ *Tagall Detected!*\nMessage deleted for mentioning too many members.`
+                    });
                     
                 } else if (action === 'kick') {
-                    // First delete the message
-                    await sock.sendMessage(chatId, {
-                        delete: {
-                            remoteJid: chatId,
-                            fromMe: false,
-                            id: message.key.id,
-                            participant: senderId
-                        }
-                    });
+                    // First try to delete the message
+                    try {
+                        await sock.sendMessage(chatId, {
+                            delete: {
+                                remoteJid: chatId,
+                                fromMe: false,
+                                id: message.key.id,
+                                participant: senderId
+                            }
+                        });
+                    } catch (deleteError) {
+                        console.error('Failed to delete message:', deleteError);
+                    }
 
-                    // Then kick the user
-                    await sock.groupParticipantsUpdate(chatId, [senderId], "remove");
-
-                    // Send notification
-                    const usernames = [`@${senderId.split('@')[0]}`];
-                    await sock.sendMessage(chatId, {
-                        text: `🚫 *Antitag Detected!*\n\n${usernames.join(', ')} has been kicked for tagging all members.`,
-                        mentions: [senderId]
-                    }, { quoted: message });
+                    // Then try to kick the user
+                    try {
+                        await sock.groupParticipantsUpdate(chatId, [senderId], "remove");
+                        
+                        // Send notification
+                        await sock.sendMessage(chatId, {
+                            text: `🚫 *Antitag Detected!*\n\nUser has been kicked for mass mentioning members.`,
+                            mentions: [senderId]
+                        });
+                    } catch (kickError) {
+                        console.error('Failed to kick user:', kickError);
+                        await sock.sendMessage(chatId, {
+                            text: `⚠️ *Tagall Detected!*\nFailed to kick user (insufficient permissions).`
+                        });
+                    }
                 }
             }
         }
@@ -184,4 +210,3 @@ module.exports = {
     handleAntitagCommand,
     handleTagDetection
 };
-
